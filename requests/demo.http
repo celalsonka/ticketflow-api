@@ -1,0 +1,124 @@
+### TicketFlow - end-to-end demo
+### Run the API (`dotnet run --project src/TicketFlow.Api`) and execute the requests top to bottom.
+### Works with VS Code "REST Client", JetBrains Rider and Visual Studio 2022+.
+
+@baseUrl = http://localhost:5137/api/v1
+
+### 1) Organizer signs in
+# @name organizerLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "organizer@ticketflow.dev", "password": "Passw0rd!" }
+
+###
+@organizerToken = {{organizerLogin.response.body.accessToken}}
+
+### 2) Organizer creates a draft event with two tiers
+# @name createEvent
+POST {{baseUrl}}/events
+Authorization: Bearer {{organizerToken}}
+Content-Type: application/json
+
+{
+  "title": "Live Demo Concert",
+  "description": "Created from demo.http",
+  "venue": "Demo Hall",
+  "city": "Istanbul",
+  "category": "Concert",
+  "startsAt": "2027-03-01T19:00:00+03:00",
+  "endsAt": "2027-03-01T22:00:00+03:00",
+  "ticketTiers": [
+    { "name": "Standard", "price": 500, "capacity": 100 },
+    { "name": "Front Row", "price": 1500, "capacity": 2 }
+  ]
+}
+
+###
+@eventId = {{createEvent.response.body.id}}
+@frontRowTierId = {{createEvent.response.body.ticketTiers[1].id}}
+
+### 3) Publish it (puts it on sale)
+POST {{baseUrl}}/events/{{eventId}}/publish
+Authorization: Bearer {{organizerToken}}
+
+### 4) Anyone can browse the catalogue
+GET {{baseUrl}}/events?city=istanbul&sortBy=Price&page=1&pageSize=10
+
+### 5) Customer signs in
+# @name customerLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "customer@ticketflow.dev", "password": "Passw0rd!" }
+
+###
+@customerToken = {{customerLogin.response.body.accessToken}}
+@refreshToken = {{customerLogin.response.body.refreshToken}}
+
+### 6) Customer reserves both front-row seats (send twice: same Idempotency-Key => same order, 200 + Idempotent-Replayed)
+# @name placeOrder
+POST {{baseUrl}}/orders
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+Idempotency-Key: demo-order-001
+
+{ "eventId": "{{eventId}}", "items": [ { "ticketTierId": "{{frontRowTierId}}", "quantity": 2 } ] }
+
+###
+@orderId = {{placeOrder.response.body.id}}
+
+### 7) The tier is now sold out -> 409 Order.SoldOut
+POST {{baseUrl}}/orders
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{ "eventId": "{{eventId}}", "items": [ { "ticketTierId": "{{frontRowTierId}}", "quantity": 1 } ] }
+
+### 8) A declined card -> 402 Order.PaymentFailed (reservation is kept)
+POST {{baseUrl}}/orders/{{orderId}}/pay
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{ "cardToken": "tok_declined" }
+
+### 9) Pay successfully -> tickets are issued
+# @name pay
+POST {{baseUrl}}/orders/{{orderId}}/pay
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{ "cardToken": "tok_visa" }
+
+###
+@ticketCode = {{pay.response.body.tickets[0].code}}
+
+### 10) Customer's tickets
+GET {{baseUrl}}/tickets
+Authorization: Bearer {{customerToken}}
+
+### 11) Organizer checks the ticket in at the door (run twice -> 409 Ticket.AlreadyCheckedIn)
+POST {{baseUrl}}/tickets/check-in
+Authorization: Bearer {{organizerToken}}
+Content-Type: application/json
+
+{ "code": "{{ticketCode}}" }
+
+### 12) Sales report
+GET {{baseUrl}}/events/{{eventId}}/sales-report
+Authorization: Bearer {{organizerToken}}
+
+### 13) Refresh-token rotation (run twice: the second call reuses a rotated token -> 401 and all sessions revoked)
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "{{refreshToken}}" }
+
+### 14) Validation errors are RFC 9457 problem details
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{ "email": "not-an-email", "password": "weak", "fullName": "" }
+
+### 15) Health
+GET http://localhost:5137/health/ready
